@@ -8,13 +8,13 @@ pub fn main() -> Nil {
   let banks = string.split(input, "\n")
 
   banks
-  |> list.fold(0, fn(acc, item) { choose_batteries(item) + acc })
+  |> list.fold(0.0, fn(acc, item) { choose_batteries_old(item) +. acc })
   |> echo
 
   Nil
 }
 
-fn choose_batteries(bank: String) -> Int {
+fn choose_batteries_old(bank: String) -> Float {
   let digits =
     // for each char
     string.to_graphemes(bank)
@@ -25,9 +25,10 @@ fn choose_batteries(bank: String) -> Int {
 
   let len = list.length(digits)
 
+  let battery_count: Int = 2
   let #(first_max, index_of_max) =
     digits
-    |> list.take(len - 1)
+    |> list.take(len - battery_count + 1)
     |> list.index_fold(#(0, 0), fn(acc, item, index) {
       let #(max, _) = acc
       case item > max {
@@ -43,7 +44,55 @@ fn choose_batteries(bank: String) -> Int {
     |> list.max(int.compare)
     |> result.unwrap(0)
 
-  second_max + first_max * 10
+  int.to_float(second_max)
+  +. int.to_float(first_max)
+  *. result.unwrap(int.power(10, int.to_float(battery_count - 1)), 0.0)
+}
+
+fn choose_batteries(bank: String) -> Int {
+  let digits =
+    // for each char
+    string.to_graphemes(bank)
+    // convert each string to int
+    |> list.map(int.parse)
+    // default to 0 if error
+    |> list.map(result.unwrap(_, 0))
+
+  let len = list.length(digits)
+
+  let battery_count: Int = 12
+  let #(first_max, index_of_max) =
+    digits
+    |> list.take(len - battery_count + 1)
+    |> list.index_fold(#(0, 0), fn(acc, item, index) {
+      let #(max, _) = acc
+      case item > max {
+        True -> #(item, index)
+        False -> acc
+      }
+    })
+
+  let digits_after = digits |> list.drop(index_of_max + 1)
+
+  todo
+}
+
+fn next_battery(battery_count: Int, joltage: Int, digits: List(Int)) -> Int {
+  let len = list.length(digits)
+  let #(max, index_of_max) =
+    digits
+    |> list.take(len - battery_count + 1)
+    |> list.index_fold(#(0, 0), fn(acc, item, index) {
+      let #(max, _) = acc
+      case item > max {
+        True -> #(item, index)
+        False -> acc
+      }
+    })
+
+  let digits_after = digits |> list.drop(index_of_max + 1)
+
+  todo
 }
 
 const input: String = "6739459674389333459433695375559949344734767926833587823236783998689734978783695374574455875833736627
