@@ -1,3 +1,4 @@
+import day_3
 import gleeunit
 
 pub fn main() -> Nil {
@@ -10,4 +11,9 @@ pub fn hello_world_test() {
   let greeting = "Hello, " <> name <> "!"
 
   assert greeting == "Hello, Joe!"
+}
+
+pub fn pow_test() {
+  let res = day_3.pow(2, 3)
+  assert res == 8
 }

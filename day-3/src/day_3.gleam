@@ -7,13 +7,27 @@ pub fn main() -> Nil {
   let banks = string.split(input, "\n")
 
   banks
-  |> list.fold(0.0, fn(acc, item) { choose_batteries_old(item) +. acc })
+  |> list.fold(0, fn(acc, bank) { choose_batteries_old(bank) + acc })
+  |> echo
+
+  banks
+  |> list.fold(0, fn(acc, bank) {
+    let digits =
+      // for each char
+      string.to_graphemes(bank)
+      // convert each string to int
+      |> list.map(int.parse)
+      // default to 0 if error
+      |> list.map(result.unwrap(_, 0))
+
+    choose_batteries(12, 0, digits) + acc
+  })
   |> echo
 
   Nil
 }
 
-fn choose_batteries_old(bank: String) -> Float {
+fn choose_batteries_old(bank: String) -> Int {
   let digits =
     // for each char
     string.to_graphemes(bank)
@@ -43,40 +57,13 @@ fn choose_batteries_old(bank: String) -> Float {
     |> list.max(int.compare)
     |> result.unwrap(0)
 
-  int.to_float(second_max)
-  +. int.to_float(first_max)
-  *. result.unwrap(int.power(10, int.to_float(battery_count - 1)), 0.0)
+  second_max
+  * pow(10, { battery_count - 2 })
+  + first_max
+  * pow(10, { battery_count - 1 })
 }
 
-fn choose_batteries(bank: String) -> Int {
-  let digits =
-    // for each char
-    string.to_graphemes(bank)
-    // convert each string to int
-    |> list.map(int.parse)
-    // default to 0 if error
-    |> list.map(result.unwrap(_, 0))
-
-  let len = list.length(digits)
-
-  let battery_count: Int = 12
-  let #(first_max, index_of_max) =
-    digits
-    |> list.take(len - battery_count + 1)
-    |> list.index_fold(#(0, 0), fn(acc, item, index) {
-      let #(max, _) = acc
-      case item > max {
-        True -> #(item, index)
-        False -> acc
-      }
-    })
-
-  let digits_after = digits |> list.drop(index_of_max + 1)
-
-  todo
-}
-
-fn next_battery(battery_count: Int, joltage: Int, digits: List(Int)) -> Int {
+fn choose_batteries(battery_count: Int, joltage: Int, digits: List(Int)) -> Int {
   let len = list.length(digits)
   let #(max, index_of_max) =
     digits
@@ -89,10 +76,36 @@ fn next_battery(battery_count: Int, joltage: Int, digits: List(Int)) -> Int {
       }
     })
 
+  let next_digit = max
   let digits_after = digits |> list.drop(index_of_max + 1)
+  let new_count = battery_count - 1
+  let new_joltage = joltage + next_digit * pow(10, new_count)
 
-  todo
+  case new_count {
+    0 -> new_joltage
+    _ -> choose_batteries(new_count, new_joltage, digits_after)
+  }
 }
+
+pub fn pow(x: Int, exp: Int) -> Int {
+  case exp {
+    0 -> 1
+    1 -> x
+    _ -> pow_recursive(x, exp - 1, x * x)
+  }
+}
+
+fn pow_recursive(x: Int, exp: Int, acc: Int) -> Int {
+  case exp {
+    1 -> acc
+    _ -> pow_recursive(x, exp - 1, acc * x)
+  }
+}
+
+const test_input: String = "987654321111111
+811111111111119
+234234234234278
+818181911112111"
 
 const input: String = "6739459674389333459433695375559949344734767926833587823236783998689734978783695374574455875833736627
 2373132532343213331342343333323324363713834443362242454554343333223332333335533234623223382233732244
