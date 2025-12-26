@@ -1,24 +1,47 @@
-use std::collections::HashSet;
+#[derive(Clone, Copy)]
+struct Range {
+    start: i64,
+    end: i64,
+}
 
 fn main() {
-    let fresh_ranges = INPUT
+    let mut ranges: Vec<_> = INPUT
         .split("\n\n")
         .collect::<Vec<&str>>()
-        .get(0)
+        .first()
         .unwrap()
         .split("\n")
-        .collect::<Vec<&str>>();
-    let mut fresh_ids = HashSet::<u64>::new();
-    for range in fresh_ranges {
-        let start_end = range.split("-").collect::<Vec<&str>>();
-        let start = start_end[0].parse::<u64>().unwrap();
-        let end = start_end[1].parse::<u64>().unwrap();
-        fresh_ids.reserve((end - start + 1) as usize);
-        for id in start..=end {
-            fresh_ids.insert(id);
+        .map(|range_str| {
+            let start_end = range_str.split("-").collect::<Vec<&str>>();
+            let start = start_end[0].parse::<i64>().unwrap();
+            let end = start_end[1].parse::<i64>().unwrap();
+            Range { start, end }
+        })
+        .collect();
+    ranges.sort_by(|a, b| a.start.cmp(&b.start));
+    let ranges_len = ranges.len();
+    let mut unique_id_count: i64 = ranges[0].end - ranges[0].start + 1;
+    for i in 1..ranges_len {
+        let range = ranges[i];
+        let diff = range.end - range.start + 1;
+        let mut max_overlap = 0;
+        let mut prev_id = i - 1;
+        loop {
+            let overlap: i64 = ranges[prev_id].end - range.start + 1;
+            if overlap > max_overlap {
+                max_overlap = overlap;
+            }
+            if prev_id == 0 {
+                break;
+            }
+            prev_id = prev_id - 1;
+        }
+        let new_id_count = diff - max_overlap;
+        if new_id_count > 0 {
+            unique_id_count = unique_id_count + new_id_count;
         }
     }
-    println!("len = {:?}", fresh_ids.len());
+    println!("unique ids: {:?}", unique_id_count);
 }
 
 const TEST_INPUT: &str = "3-5
