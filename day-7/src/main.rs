@@ -15,33 +15,69 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Left,
+    Right,
+    Stright,
+}
+
 #[derive(Default)]
 struct App {
     pub grid: Vec<Vec<char>>,
+    pub width: usize,
+    pub height: usize,
+
+    pub pos_y: usize,
+    pub pos_x: usize,
+    pub turns: Vec<Direction>,
+    pub left_turn_count: u64,
+    pub permutations: u64,
+
     pub vertical_scroll_state: ScrollbarState,
     pub horizontal_scroll_state: ScrollbarState,
     pub vertical_scroll: usize,
     pub horizontal_scroll: usize,
+
+    pub paused: bool,
 }
 
 impl App {
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
-        let tick_rate = Duration::from_millis(30);
-        let mut last_tick = Instant::now();
-
-        self.grid = INPUT
+    fn init(&mut self) {
+        self.grid = TEST_INPUT
             .split("\n")
             .collect::<Vec<&str>>()
             .iter()
             .map(|line| line.chars().collect::<Vec<char>>())
             .collect();
+        self.height = self.grid.len();
+        self.width = self.grid[0].len();
+
+        let start_pos = self.grid[0].iter().position(|&c| c == 'S').unwrap();
+        self.pos_y = 1;
+        self.pos_x = start_pos;
+        self.grid[self.pos_y][self.pos_x] = '|';
+    }
+
+    fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
+        let poll_rate = Duration::from_millis(30);
+        let update_rate = Duration::from_millis(100);
+        let mut last_poll = Instant::now();
+        let mut last_update = Instant::now();
+
+        self.init();
 
         loop {
+            if !self.paused && last_update.elapsed() > update_rate {
+                self.update_grid();
+                last_update = Instant::now();
+            }
+
             terminal.draw(|frame| self.render(frame))?;
 
-            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            let timeout = poll_rate.saturating_sub(last_poll.elapsed());
             if !event::poll(timeout)? {
-                last_tick = Instant::now();
+                last_poll = Instant::now();
                 continue;
             }
             if let Some(key) = event::read()?.as_key_press_event() {
@@ -51,26 +87,85 @@ impl App {
                     KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
                     KeyCode::Char('h') | KeyCode::Left => self.scroll_left(),
                     KeyCode::Char('l') | KeyCode::Right => self.scroll_right(),
+                    KeyCode::Char(' ') => self.paused = !self.paused,
+                    KeyCode::PageUp => self.scroll_up_big(),
+                    KeyCode::PageDown => self.scroll_down_big(),
                     _ => {}
                 }
             }
         }
     }
 
+    fn update_grid(&mut self) {
+        if self.pos_y + 1 >= self.height {
+            self.permutations += 1;
+            if self.left_turn_count == 0 {
+                panic!("done! {}", self.permutations);
+            }
+
+            // retrace steps to last left
+            loop {
+                let last_turn = self.turns.pop().unwrap();
+
+                self.grid[self.pos_y][self.pos_x] = '.';
+                self.pos_y -= 1;
+                self.grid[self.pos_y][self.pos_x] = '.';
+                self.pos_y -= 1;
+
+                match last_turn {
+                    Direction::Right => self.pos_x -= 1,
+                    Direction::Stright => (),
+                    Direction::Left => {
+                        self.pos_x += 1;
+                        self.left_turn_count -= 1;
+                        break;
+                    }
+                }
+            }
+
+            // turn right instead
+            self.pos_y += 1;
+            self.turns.push(Direction::Right);
+            self.pos_x += 1;
+            self.grid[self.pos_y][self.pos_x] = '|';
+            self.pos_y += 1;
+            self.grid[self.pos_y][self.pos_x] = '|';
+
+            return;
+        }
+
+        self.pos_y += 1;
+
+        if self.grid[self.pos_y][self.pos_x] == '^' {
+            // turn left
+            self.left_turn_count += 1;
+            self.turns.push(Direction::Left);
+            self.pos_x -= 1;
+            self.grid[self.pos_y][self.pos_x] = '|';
+            self.pos_y += 1;
+            self.grid[self.pos_y][self.pos_x] = '|';
+            return;
+        }
+
+        // keep going straight
+        self.turns.push(Direction::Stright);
+        self.grid[self.pos_y][self.pos_x] = '|';
+        self.pos_y += 1;
+        self.grid[self.pos_y][self.pos_x] = '|';
+    }
+
     fn render(&mut self, frame: &mut ratatui::Frame) {
         let mut display_text: Vec<Line<'_>> = Vec::new();
-        for y in 0..self.grid.len() {
+        for y in 0..self.height {
             let mut line = String::new();
-            for x in 0..self.grid[0].len() {
+            for x in 0..self.width {
                 line.push(self.grid[y][x]);
             }
             display_text.push(Line::from(line));
         }
 
-        self.vertical_scroll_state = self.vertical_scroll_state.content_length(self.grid.len());
-        self.horizontal_scroll_state = self
-            .horizontal_scroll_state
-            .content_length(self.grid[0].len());
+        self.vertical_scroll_state = self.vertical_scroll_state.content_length(self.height);
+        self.horizontal_scroll_state = self.horizontal_scroll_state.content_length(self.width);
 
         let area = frame.area();
         let chunks =
@@ -81,13 +176,13 @@ impl App {
             .title("Use h j k l or ◄ ▲ ▼ ► to scroll".bold());
         frame.render_widget(title, chunks[0]);
 
+        let title_string: String = format!(
+            "x = {}, y = {}, p = {}",
+            self.pos_x, self.pos_y, self.permutations
+        );
         let paragraph = Paragraph::new(display_text)
             .gray()
-            .block(
-                Block::bordered()
-                    .gray()
-                    .title("Vertical scrollbar with arrows".bold()),
-            )
+            .block(Block::bordered().gray().title(title_string.bold()))
             .scroll((self.vertical_scroll as u16, 0));
         frame.render_widget(paragraph, chunks[1]);
         frame.render_stateful_widget(
@@ -106,6 +201,16 @@ impl App {
 
     fn scroll_up(&mut self) {
         self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
+        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
+    }
+
+    fn scroll_down_big(&mut self) {
+        self.vertical_scroll = self.vertical_scroll.saturating_add(10);
+        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
+    }
+
+    fn scroll_up_big(&mut self) {
+        self.vertical_scroll = self.vertical_scroll.saturating_sub(10);
         self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
     }
 
