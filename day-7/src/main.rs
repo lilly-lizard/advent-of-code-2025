@@ -26,7 +26,7 @@ struct App {
 
 impl App {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
-        let tick_rate = Duration::from_millis(250);
+        let tick_rate = Duration::from_millis(30);
         let mut last_tick = Instant::now();
 
         self.grid = INPUT
