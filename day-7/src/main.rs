@@ -7,11 +7,40 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::{Duration, Instant},
+};
 
 fn main() -> color_eyre::Result<()> {
+    let draw_rate = Duration::from_millis(30);
+    let (tx, rx) = mpsc::channel::<Vec<Vec<char>>>();
+
+    thread::spawn(move || {
+        let mut sim = Simulation::default();
+        sim.init();
+
+        let mut last_draw = Instant::now();
+
+        println!("sim thread loop started");
+        loop {
+            sim.update_grid();
+
+            if last_draw.elapsed() > draw_rate {
+                let send_res = tx.send(sim.grid.clone());
+                if let Err(_e) = send_res {
+                    // receiver (thread) disconnected
+                    return;
+                }
+                last_draw = Instant::now();
+            }
+        }
+    });
+
+    let mut app = App::new(rx, draw_rate);
     color_eyre::install()?;
-    ratatui::run(|terminal| App::default().run(terminal))?;
+    ratatui::run(|terminal| app.run(terminal))?;
     Ok(())
 }
 
@@ -23,7 +52,7 @@ enum Direction {
 }
 
 #[derive(Default)]
-struct App {
+struct Simulation {
     pub grid: Vec<Vec<char>>,
     pub width: usize,
     pub height: usize,
@@ -33,18 +62,11 @@ struct App {
     pub turns: Vec<Direction>,
     pub left_turn_count: u64,
     pub permutations: u64,
-
-    pub vertical_scroll_state: ScrollbarState,
-    pub horizontal_scroll_state: ScrollbarState,
-    pub vertical_scroll: usize,
-    pub horizontal_scroll: usize,
-
-    pub paused: bool,
 }
 
-impl App {
+impl Simulation {
     fn init(&mut self) {
-        self.grid = TEST_INPUT
+        self.grid = INPUT
             .split("\n")
             .collect::<Vec<&str>>()
             .iter()
@@ -57,43 +79,6 @@ impl App {
         self.pos_y = 1;
         self.pos_x = start_pos;
         self.grid[self.pos_y][self.pos_x] = '|';
-    }
-
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
-        let poll_rate = Duration::from_millis(30);
-        let update_rate = Duration::from_millis(100);
-        let mut last_poll = Instant::now();
-        let mut last_update = Instant::now();
-
-        self.init();
-
-        loop {
-            if !self.paused && last_update.elapsed() > update_rate {
-                self.update_grid();
-                last_update = Instant::now();
-            }
-
-            terminal.draw(|frame| self.render(frame))?;
-
-            let timeout = poll_rate.saturating_sub(last_poll.elapsed());
-            if !event::poll(timeout)? {
-                last_poll = Instant::now();
-                continue;
-            }
-            if let Some(key) = event::read()?.as_key_press_event() {
-                match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
-                    KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
-                    KeyCode::Char('h') | KeyCode::Left => self.scroll_left(),
-                    KeyCode::Char('l') | KeyCode::Right => self.scroll_right(),
-                    KeyCode::Char(' ') => self.paused = !self.paused,
-                    KeyCode::PageUp => self.scroll_up_big(),
-                    KeyCode::PageDown => self.scroll_down_big(),
-                    _ => {}
-                }
-            }
-        }
     }
 
     fn update_grid(&mut self) {
@@ -153,6 +138,83 @@ impl App {
         self.pos_y += 1;
         self.grid[self.pos_y][self.pos_x] = '|';
     }
+}
+
+struct App {
+    pub vertical_scroll_state: ScrollbarState,
+    pub horizontal_scroll_state: ScrollbarState,
+    pub vertical_scroll: usize,
+    pub horizontal_scroll: usize,
+
+    pub permutations: u64,
+    pub grid: Vec<Vec<char>>,
+    pub width: usize,
+    pub height: usize,
+
+    pub rx_grid: Receiver<Vec<Vec<char>>>,
+    pub poll_rate: Duration,
+    pub render_rate: Duration,
+}
+
+impl App {
+    fn new(rx_grid: Receiver<Vec<Vec<char>>>, render_rate: Duration) -> Self {
+        let grid: Vec<Vec<char>> = INPUT
+            .split("\n")
+            .collect::<Vec<&str>>()
+            .iter()
+            .map(|line| line.chars().collect::<Vec<char>>())
+            .collect();
+        let height = grid.len();
+        let width = grid[0].len();
+
+        Self {
+            vertical_scroll_state: Default::default(),
+            horizontal_scroll_state: Default::default(),
+            vertical_scroll: 0,
+            horizontal_scroll: 0,
+
+            permutations: 0,
+            grid,
+            width,
+            height,
+
+            rx_grid,
+            render_rate,
+            poll_rate: Duration::from_millis(30),
+        }
+    }
+
+    fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
+        let mut last_poll = Instant::now();
+        let mut last_render = Instant::now();
+        let rx_timeout = Duration::from_millis(10);
+
+        loop {
+            if last_render.elapsed() > self.render_rate {
+                self.grid = self.rx_grid.recv_timeout(rx_timeout)?;
+                terminal.draw(|frame| self.render(frame))?;
+                last_render = Instant::now();
+            }
+
+            let timeout = self.poll_rate.saturating_sub(last_poll.elapsed());
+            if !event::poll(timeout)? {
+                last_poll = Instant::now();
+                continue;
+            }
+            if let Some(key) = event::read()?.as_key_press_event() {
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
+                    KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
+                    KeyCode::Char('h') | KeyCode::Left => self.scroll_left(),
+                    KeyCode::Char('l') | KeyCode::Right => self.scroll_right(),
+                    KeyCode::PageUp => self.scroll_up_big(),
+                    KeyCode::PageDown => self.scroll_down_big(),
+                    _ => {}
+                }
+            }
+        }
+    }
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
         let mut display_text: Vec<Line<'_>> = Vec::new();
@@ -176,10 +238,7 @@ impl App {
             .title("Use h j k l or ◄ ▲ ▼ ► to scroll".bold());
         frame.render_widget(title, chunks[0]);
 
-        let title_string: String = format!(
-            "x = {}, y = {}, p = {}",
-            self.pos_x, self.pos_y, self.permutations
-        );
+        let title_string: String = format!("permutations = {}", self.permutations);
         let paragraph = Paragraph::new(display_text)
             .gray()
             .block(Block::bordered().gray().title(title_string.bold()))
