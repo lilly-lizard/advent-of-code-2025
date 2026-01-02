@@ -1,35 +1,127 @@
-use std::{
-    io::{Write, stdout},
-    thread::sleep,
-    time::Duration,
+use color_eyre::eyre;
+use crossterm::event::{self, KeyCode};
+use ratatui::{
+    DefaultTerminal,
+    layout::{Alignment, Constraint, Layout},
+    style::Stylize,
+    text::Line,
+    widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use std::time::{Duration, Instant};
 
-fn main() {
-    let mut grid: Vec<Vec<char>> = TEST_INPUT
-        .split("\n")
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|line| line.chars().collect::<Vec<char>>())
-        .collect();
-    for y in 0..grid.len() {
-        for x in 0..grid[0].len() {
-            grid[y][x] = '|';
-            sleep(Duration::from_millis(100));
-            print_grid(&grid);
-        }
-    }
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+    ratatui::run(|terminal| App::default().run(terminal))?;
+    Ok(())
 }
 
-fn print_grid(grid: &Vec<Vec<char>>) {
-    print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
-    //print!("{}[2J", 27 as char);
-    for y in 0..grid.len() {
-        for x in 0..grid[0].len() {
-            print!("{}", grid[y][x]);
+#[derive(Default)]
+struct App {
+    pub grid: Vec<Vec<char>>,
+    pub vertical_scroll_state: ScrollbarState,
+    pub horizontal_scroll_state: ScrollbarState,
+    pub vertical_scroll: usize,
+    pub horizontal_scroll: usize,
+}
+
+impl App {
+    fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
+        let tick_rate = Duration::from_millis(250);
+        let mut last_tick = Instant::now();
+
+        self.grid = INPUT
+            .split("\n")
+            .collect::<Vec<&str>>()
+            .iter()
+            .map(|line| line.chars().collect::<Vec<char>>())
+            .collect();
+
+        loop {
+            terminal.draw(|frame| self.render(frame))?;
+
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if !event::poll(timeout)? {
+                last_tick = Instant::now();
+                continue;
+            }
+            if let Some(key) = event::read()?.as_key_press_event() {
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
+                    KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
+                    KeyCode::Char('h') | KeyCode::Left => self.scroll_left(),
+                    KeyCode::Char('l') | KeyCode::Right => self.scroll_right(),
+                    _ => {}
+                }
+            }
         }
-        println!();
     }
-    //let _ = stdout().flush();
+
+    fn render(&mut self, frame: &mut ratatui::Frame) {
+        let mut display_text: Vec<Line<'_>> = Vec::new();
+        for y in 0..self.grid.len() {
+            let mut line = String::new();
+            for x in 0..self.grid[0].len() {
+                line.push(self.grid[y][x]);
+            }
+            display_text.push(Line::from(line));
+        }
+
+        self.vertical_scroll_state = self.vertical_scroll_state.content_length(self.grid.len());
+        self.horizontal_scroll_state = self
+            .horizontal_scroll_state
+            .content_length(self.grid[0].len());
+
+        let area = frame.area();
+        let chunks =
+            Layout::vertical([Constraint::Min(1), Constraint::Percentage(100)]).split(area);
+
+        let title = Block::new()
+            .title_alignment(Alignment::Center)
+            .title("Use h j k l or ◄ ▲ ▼ ► to scroll".bold());
+        frame.render_widget(title, chunks[0]);
+
+        let paragraph = Paragraph::new(display_text)
+            .gray()
+            .block(
+                Block::bordered()
+                    .gray()
+                    .title("Vertical scrollbar with arrows".bold()),
+            )
+            .scroll((self.vertical_scroll as u16, 0));
+        frame.render_widget(paragraph, chunks[1]);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓")),
+            chunks[1],
+            &mut self.vertical_scroll_state,
+        );
+    }
+
+    fn scroll_down(&mut self) {
+        self.vertical_scroll = self.vertical_scroll.saturating_add(1);
+        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
+    }
+
+    fn scroll_up(&mut self) {
+        self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
+        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
+    }
+
+    fn scroll_left(&mut self) {
+        self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
+        self.horizontal_scroll_state = self
+            .horizontal_scroll_state
+            .position(self.horizontal_scroll);
+    }
+
+    fn scroll_right(&mut self) {
+        self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
+        self.horizontal_scroll_state = self
+            .horizontal_scroll_state
+            .position(self.horizontal_scroll);
+    }
 }
 
 fn _day_4_pt_1() {
