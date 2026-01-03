@@ -15,10 +15,12 @@ use std::{
 
 fn main() -> color_eyre::Result<()> {
     let draw_rate = Duration::from_millis(30);
-    let (tx, rx) = mpsc::channel::<Vec<Vec<char>>>();
+    let (tx_grid, rx_grid) = mpsc::channel::<Vec<Vec<char>>>();
+    let (tx_perms, rx_perms) = mpsc::channel::<u64>();
+    let (tx_fps, rx_fps) = mpsc::channel::<f32>();
 
     thread::spawn(move || {
-        let mut sim = Simulation::default();
+        let mut sim = Simulation::new();
         sim.init();
 
         let mut last_draw = Instant::now();
@@ -28,7 +30,9 @@ fn main() -> color_eyre::Result<()> {
             sim.update_grid();
 
             if last_draw.elapsed() > draw_rate {
-                let send_res = tx.send(sim.grid.clone());
+                let _ = tx_grid.send(sim.grid.clone());
+                let _ = tx_perms.send(sim.permutations);
+                let send_res = tx_fps.send(sim.fps);
                 if let Err(_e) = send_res {
                     // receiver (thread) disconnected
                     return;
@@ -38,7 +42,7 @@ fn main() -> color_eyre::Result<()> {
         }
     });
 
-    let mut app = App::new(rx, draw_rate);
+    let mut app = App::new(rx_grid, rx_perms, rx_fps, draw_rate);
     color_eyre::install()?;
     ratatui::run(|terminal| app.run(terminal))?;
     Ok(())
@@ -51,7 +55,6 @@ enum Direction {
     Stright,
 }
 
-#[derive(Default)]
 struct Simulation {
     pub grid: Vec<Vec<char>>,
     pub width: usize,
@@ -62,9 +65,31 @@ struct Simulation {
     pub turns: Vec<Direction>,
     pub left_turn_count: u64,
     pub permutations: u64,
+
+    pub frame_count: u64,
+    pub last_fps_check: Instant,
+    pub fps: f32, // 3,243,803
 }
 
 impl Simulation {
+    pub fn new() -> Self {
+        Self {
+            grid: Default::default(),
+            width: Default::default(),
+            height: Default::default(),
+
+            pos_y: Default::default(),
+            pos_x: Default::default(),
+            turns: Default::default(),
+            left_turn_count: Default::default(),
+            permutations: Default::default(),
+
+            frame_count: Default::default(),
+            last_fps_check: Instant::now(),
+            fps: Default::default(),
+        }
+    }
+
     fn init(&mut self) {
         self.grid = INPUT
             .split("\n")
@@ -82,6 +107,13 @@ impl Simulation {
     }
 
     fn update_grid(&mut self) {
+        self.frame_count += 1;
+        if self.last_fps_check.elapsed() > Duration::from_secs(1) {
+            self.fps = self.frame_count as f32;
+            self.frame_count = 0;
+            self.last_fps_check = Instant::now();
+        }
+
         if self.pos_y + 1 >= self.height {
             self.permutations += 1;
             if self.left_turn_count == 0 {
@@ -146,18 +178,26 @@ struct App {
     pub vertical_scroll: usize,
     pub horizontal_scroll: usize,
 
-    pub permutations: u64,
     pub grid: Vec<Vec<char>>,
+    pub permutations: u64,
+    pub fps: f32,
     pub width: usize,
     pub height: usize,
 
     pub rx_grid: Receiver<Vec<Vec<char>>>,
+    pub rx_perms: Receiver<u64>,
+    pub rx_fps: Receiver<f32>,
     pub poll_rate: Duration,
     pub render_rate: Duration,
 }
 
 impl App {
-    fn new(rx_grid: Receiver<Vec<Vec<char>>>, render_rate: Duration) -> Self {
+    fn new(
+        rx_grid: Receiver<Vec<Vec<char>>>,
+        rx_perms: Receiver<u64>,
+        rx_fps: Receiver<f32>,
+        render_rate: Duration,
+    ) -> Self {
         let grid: Vec<Vec<char>> = INPUT
             .split("\n")
             .collect::<Vec<&str>>()
@@ -173,12 +213,15 @@ impl App {
             vertical_scroll: 0,
             horizontal_scroll: 0,
 
-            permutations: 0,
             grid,
+            permutations: 0,
+            fps: 0.,
             width,
             height,
 
             rx_grid,
+            rx_perms,
+            rx_fps,
             render_rate,
             poll_rate: Duration::from_millis(30),
         }
@@ -192,6 +235,8 @@ impl App {
         loop {
             if last_render.elapsed() > self.render_rate {
                 self.grid = self.rx_grid.recv_timeout(rx_timeout)?;
+                self.permutations = self.rx_perms.recv_timeout(rx_timeout)?;
+                self.fps = self.rx_fps.recv_timeout(rx_timeout)?;
                 terminal.draw(|frame| self.render(frame))?;
                 last_render = Instant::now();
             }
@@ -238,7 +283,8 @@ impl App {
             .title("Use h j k l or ◄ ▲ ▼ ► to scroll".bold());
         frame.render_widget(title, chunks[0]);
 
-        let title_string: String = format!("permutations = {}", self.permutations);
+        let title_string: String =
+            format!("permutations = {}, fps = {}", self.permutations, self.fps);
         let paragraph = Paragraph::new(display_text)
             .gray()
             .block(Block::bordered().gray().title(title_string.bold()))
