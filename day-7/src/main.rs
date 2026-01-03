@@ -1,387 +1,68 @@
-use color_eyre::eyre;
-use crossterm::event::{self, KeyCode};
-use ratatui::{
-    DefaultTerminal,
-    layout::{Alignment, Constraint, Layout},
-    style::Stylize,
-    text::Line,
-    widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
-};
-use std::{
-    sync::mpsc::{self, Receiver},
-    thread,
-    time::{Duration, Instant},
-};
+use std::time::Instant;
 
-fn main() -> color_eyre::Result<()> {
-    let draw_rate = Duration::from_millis(30);
-    let (tx_current_path, rx_current_path) = mpsc::channel::<Vec<Direction>>();
-    let (tx_perms, rx_perms) = mpsc::channel::<u64>();
-    let (tx_fps, rx_fps) = mpsc::channel::<f32>();
+mod part_1;
+mod part_2_big_vecs;
+mod part_2_visualizer;
 
-    thread::spawn(move || {
-        let mut sim = Simulation::new();
-        sim.init();
+fn main() {
+    let start_time = Instant::now();
 
-        let mut last_draw = Instant::now();
-
-        println!("sim thread loop started");
-        loop {
-            sim.update_grid();
-
-            if last_draw.elapsed() > draw_rate {
-                let _ = tx_current_path.send(sim.turns.clone());
-                let _ = tx_perms.send(sim.permutations);
-                let send_res = tx_fps.send(sim.fps);
-                if let Err(_e) = send_res {
-                    // receiver (thread) disconnected
-                    return;
-                }
-                last_draw = Instant::now();
-            }
-        }
-    });
-
-    let mut app = App::new(rx_current_path, rx_perms, rx_fps, draw_rate);
-    color_eyre::install()?;
-    ratatui::run(|terminal| app.run(terminal))?;
-    Ok(())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Direction {
-    Left,
-    Right,
-    Stright,
-}
-
-struct Simulation {
-    pub grid: Vec<Vec<char>>,
-    pub width: usize,
-    pub height: usize,
-
-    pub pos_y: usize,
-    pub pos_x: usize,
-    pub turns: Vec<Direction>,
-    pub left_turn_count: u64,
-    pub permutations: u64,
-
-    pub frame_count: u64,
-    pub last_fps_check: Instant,
-    pub fps: f32,
-    // send grid:           3,243,803
-    // send directions:     2,941,163
-    // remove grid writing: 6,747,138
-}
-
-impl Simulation {
-    pub fn new() -> Self {
-        Self {
-            grid: Default::default(),
-            width: Default::default(),
-            height: Default::default(),
-
-            pos_y: Default::default(),
-            pos_x: Default::default(),
-            turns: Default::default(),
-            left_turn_count: Default::default(),
-            permutations: Default::default(),
-
-            frame_count: Default::default(),
-            last_fps_check: Instant::now(),
-            fps: Default::default(),
-        }
-    }
-
-    fn init(&mut self) {
-        self.grid = INPUT
-            .split("\n")
-            .collect::<Vec<&str>>()
-            .iter()
-            .map(|line| line.chars().collect::<Vec<char>>())
-            .collect();
-        self.height = self.grid.len();
-        self.width = self.grid[0].len();
-
-        let start_pos = self.grid[0].iter().position(|&c| c == 'S').unwrap();
-        self.pos_y = 1;
-        self.pos_x = start_pos;
-    }
-
-    fn update_grid(&mut self) {
-        self.frame_count += 1;
-        if self.last_fps_check.elapsed() > Duration::from_secs(1) {
-            self.fps = self.frame_count as f32;
-            self.frame_count = 0;
-            self.last_fps_check = Instant::now();
-        }
-
-        if self.pos_y + 1 >= self.height {
-            self.permutations += 1;
-            if self.left_turn_count == 0 {
-                panic!("done! {}", self.permutations);
-            }
-
-            // retrace steps to last left
-            loop {
-                let last_turn = self.turns.pop().unwrap();
-
-                self.pos_y -= 2;
-
-                match last_turn {
-                    Direction::Right => self.pos_x -= 1,
-                    Direction::Stright => (),
-                    Direction::Left => {
-                        self.pos_x += 1;
-                        self.left_turn_count -= 1;
-                        break;
-                    }
-                }
-            }
-
-            // turn right instead
-            self.turns.push(Direction::Right);
-            self.pos_x += 1;
-            self.pos_y += 2;
-
-            return;
-        }
-
-        self.pos_y += 1;
-
-        if self.grid[self.pos_y][self.pos_x] == '^' {
-            // turn left
-            self.left_turn_count += 1;
-            self.turns.push(Direction::Left);
-            self.pos_x -= 1;
-            self.pos_y += 1;
-            return;
-        }
-
-        // keep going straight
-        self.turns.push(Direction::Stright);
-        self.pos_y += 1;
-    }
-}
-
-struct App {
-    pub vertical_scroll_state: ScrollbarState,
-    pub horizontal_scroll_state: ScrollbarState,
-    pub vertical_scroll: usize,
-    pub horizontal_scroll: usize,
-
-    pub original_grid: Vec<Vec<char>>,
-    pub current_path: Vec<Direction>,
-    pub permutations: u64,
-    pub fps: f32,
-    pub width: usize,
-    pub height: usize,
-
-    pub rx_current_path: Receiver<Vec<Direction>>,
-    pub rx_perms: Receiver<u64>,
-    pub rx_fps: Receiver<f32>,
-    pub poll_rate: Duration,
-    pub render_rate: Duration,
-}
-
-impl App {
-    fn new(
-        rx_current_path: Receiver<Vec<Direction>>,
-        rx_perms: Receiver<u64>,
-        rx_fps: Receiver<f32>,
-        render_rate: Duration,
-    ) -> Self {
-        let grid: Vec<Vec<char>> = INPUT
-            .split("\n")
-            .collect::<Vec<&str>>()
-            .iter()
-            .map(|line| line.chars().collect::<Vec<char>>())
-            .collect();
-        let height = grid.len();
-        let width = grid[0].len();
-
-        Self {
-            vertical_scroll_state: Default::default(),
-            horizontal_scroll_state: Default::default(),
-            vertical_scroll: 0,
-            horizontal_scroll: 0,
-
-            original_grid: grid,
-            current_path: Vec::new(),
-            permutations: 0,
-            fps: 0.,
-            width,
-            height,
-
-            rx_current_path,
-            rx_perms,
-            rx_fps,
-            render_rate,
-            poll_rate: Duration::from_millis(30),
-        }
-    }
-
-    fn run(&mut self, terminal: &mut DefaultTerminal) -> eyre::Result<()> {
-        let mut last_poll = Instant::now();
-        let mut last_render = Instant::now();
-        let rx_timeout = Duration::from_millis(10);
-
-        loop {
-            if last_render.elapsed() > self.render_rate {
-                self.current_path = self.rx_current_path.recv_timeout(rx_timeout)?;
-                self.permutations = self.rx_perms.recv_timeout(rx_timeout)?;
-                self.fps = self.rx_fps.recv_timeout(rx_timeout)?;
-
-                terminal.draw(|frame| self.render(frame))?;
-                last_render = Instant::now();
-            }
-
-            let timeout = self.poll_rate.saturating_sub(last_poll.elapsed());
-            if !event::poll(timeout)? {
-                last_poll = Instant::now();
-                continue;
-            }
-            if let Some(key) = event::read()?.as_key_press_event() {
-                match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
-                    KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
-                    KeyCode::Char('h') | KeyCode::Left => self.scroll_left(),
-                    KeyCode::Char('l') | KeyCode::Right => self.scroll_right(),
-                    KeyCode::PageUp => self.scroll_up_big(),
-                    KeyCode::PageDown => self.scroll_down_big(),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn render(&mut self, frame: &mut ratatui::Frame) {
-        let mut grid = self.original_grid.clone();
-
-        let start_pos = grid[0].iter().position(|&c| c == 'S').unwrap();
-        let mut pos_y = 1;
-        let mut pos_x = start_pos;
-        grid[pos_y][pos_x] = '|';
-
-        for turn in &self.current_path {
-            pos_y += 1;
-            match turn {
-                Direction::Left => pos_x -= 1,
-                Direction::Right => pos_x += 1,
-                Direction::Stright => (),
-            }
-            grid[pos_y][pos_x] = '|';
-            pos_y += 1;
-            grid[pos_y][pos_x] = '|';
-        }
-
-        let mut display_text: Vec<Line<'_>> = Vec::new();
-        for y in 0..self.height {
-            let mut line = String::new();
-            for x in 0..self.width {
-                line.push(grid[y][x]);
-            }
-            display_text.push(Line::from(line));
-        }
-
-        self.vertical_scroll_state = self.vertical_scroll_state.content_length(self.height);
-        self.horizontal_scroll_state = self.horizontal_scroll_state.content_length(self.width);
-
-        let area = frame.area();
-        let chunks =
-            Layout::vertical([Constraint::Min(1), Constraint::Percentage(100)]).split(area);
-
-        let title = Block::new()
-            .title_alignment(Alignment::Center)
-            .title("Use h j k l or ◄ ▲ ▼ ► to scroll".bold());
-        frame.render_widget(title, chunks[0]);
-
-        let title_string: String =
-            format!("permutations = {}, fps = {}", self.permutations, self.fps);
-        let paragraph = Paragraph::new(display_text)
-            .gray()
-            .block(Block::bordered().gray().title(title_string.bold()))
-            .scroll((self.vertical_scroll as u16, 0));
-        frame.render_widget(paragraph, chunks[1]);
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(Some("↑"))
-                .end_symbol(Some("↓")),
-            chunks[1],
-            &mut self.vertical_scroll_state,
-        );
-    }
-
-    fn scroll_down(&mut self) {
-        self.vertical_scroll = self.vertical_scroll.saturating_add(1);
-        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
-    }
-
-    fn scroll_up(&mut self) {
-        self.vertical_scroll = self.vertical_scroll.saturating_sub(1);
-        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
-    }
-
-    fn scroll_down_big(&mut self) {
-        self.vertical_scroll = self.vertical_scroll.saturating_add(10);
-        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
-    }
-
-    fn scroll_up_big(&mut self) {
-        self.vertical_scroll = self.vertical_scroll.saturating_sub(10);
-        self.vertical_scroll_state = self.vertical_scroll_state.position(self.vertical_scroll);
-    }
-
-    fn scroll_left(&mut self) {
-        self.horizontal_scroll = self.horizontal_scroll.saturating_sub(1);
-        self.horizontal_scroll_state = self
-            .horizontal_scroll_state
-            .position(self.horizontal_scroll);
-    }
-
-    fn scroll_right(&mut self) {
-        self.horizontal_scroll = self.horizontal_scroll.saturating_add(1);
-        self.horizontal_scroll_state = self
-            .horizontal_scroll_state
-            .position(self.horizontal_scroll);
-    }
-}
-
-fn _day_4_pt_1() {
-    let grid: Vec<Vec<char>> = INPUT
+    let grid: Vec<_> = INPUT
         .split("\n")
         .collect::<Vec<&str>>()
         .iter()
         .map(|line| line.chars().collect::<Vec<char>>())
         .collect();
+    let height = grid.len();
+    //const WIDTH: usize = 15;
+    const WIDTH: usize = 141;
 
-    let mut splitter_count = 0;
-    let mut skipped_splitter_count = 0;
-    for y in 0..grid.len() {
-        for x in 0..grid[0].len() {
-            let char = grid[y][x];
-            if char != '^' {
+    let mut buffer_1: [u64; WIDTH] = [0; WIDTH];
+    let mut buffer_2: [u64; WIDTH] = [0; WIDTH];
+
+    let mut tachyons_new = &mut buffer_1;
+    let mut tachyons_prev = &mut buffer_2;
+
+    let start_pos = grid[0].iter().position(|&c| c == 'S').unwrap();
+    let mut y_pos = 2;
+    tachyons_prev[start_pos] = 1;
+
+    while y_pos < height {
+        clear_array(tachyons_new);
+
+        for x_pos in 0..WIDTH {
+            if tachyons_prev[x_pos] == 0 {
                 continue;
             }
-            splitter_count += 1;
-            let mut row = y - 1;
-            let column_left = x - 1;
-            let column_mid = x;
-            let column_right = x + 1;
-            while row > 0 {
-                if grid[row][column_mid] == '^' {
-                    skipped_splitter_count += 1;
-                    break;
-                }
-                if grid[row][column_left] == '^' || grid[row][column_right] == '^' {
-                    break;
-                }
-                row -= 1;
+            if grid[y_pos][x_pos] == '^' {
+                tachyons_new[x_pos + 1] += tachyons_prev[x_pos];
+                tachyons_new[x_pos - 1] += tachyons_prev[x_pos];
+            } else {
+                tachyons_new[x_pos] += tachyons_prev[x_pos];
             }
         }
+
+        //let permutations: u64 = tachyons_new.iter().fold(0, |acc, x| acc + x);
+        //println!("y pos = {y_pos}; perms = {:?}", tachyons_new);
+        println!("y pos = {y_pos}");
+        y_pos += 2;
+
+        let temp = tachyons_prev;
+        tachyons_prev = tachyons_new;
+        tachyons_new = temp;
     }
-    println!("count = {:?}", splitter_count - skipped_splitter_count);
+
+    let permutations: u64 = tachyons_prev.iter().fold(0, |acc, x| acc + x);
+
+    println!();
+    println!(
+        "permutations = {permutations}; done in {}µs",
+        start_time.elapsed().as_micros()
+    );
+}
+
+pub fn clear_array(ary: &mut [u64]) {
+    ary.iter_mut().for_each(|m| *m = 0)
 }
 
 const TEST_INPUT: &str = ".......S.......
@@ -400,6 +81,18 @@ const TEST_INPUT: &str = ".......S.......
 ...............
 .^.^.^.^.^...^.
 ...............";
+
+const TEST_INPUT_2: &str = ".......S.......
+...............
+.......^.......
+...............
+......^.^......
+...............
+.....^...^.....
+...............
+....^.^...^....";
+// 8 splitters
+// 9 timelines
 
 const INPUT: &str = "......................................................................S......................................................................
 .............................................................................................................................................
