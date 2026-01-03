@@ -15,7 +15,7 @@ use std::{
 
 fn main() -> color_eyre::Result<()> {
     let draw_rate = Duration::from_millis(30);
-    let (tx_grid, rx_grid) = mpsc::channel::<Vec<Vec<char>>>();
+    let (tx_current_path, rx_current_path) = mpsc::channel::<Vec<Direction>>();
     let (tx_perms, rx_perms) = mpsc::channel::<u64>();
     let (tx_fps, rx_fps) = mpsc::channel::<f32>();
 
@@ -30,7 +30,7 @@ fn main() -> color_eyre::Result<()> {
             sim.update_grid();
 
             if last_draw.elapsed() > draw_rate {
-                let _ = tx_grid.send(sim.grid.clone());
+                let _ = tx_current_path.send(sim.turns.clone());
                 let _ = tx_perms.send(sim.permutations);
                 let send_res = tx_fps.send(sim.fps);
                 if let Err(_e) = send_res {
@@ -42,7 +42,7 @@ fn main() -> color_eyre::Result<()> {
         }
     });
 
-    let mut app = App::new(rx_grid, rx_perms, rx_fps, draw_rate);
+    let mut app = App::new(rx_current_path, rx_perms, rx_fps, draw_rate);
     color_eyre::install()?;
     ratatui::run(|terminal| app.run(terminal))?;
     Ok(())
@@ -68,7 +68,10 @@ struct Simulation {
 
     pub frame_count: u64,
     pub last_fps_check: Instant,
-    pub fps: f32, // 3,243,803
+    pub fps: f32,
+    // send grid:           3,243,803
+    // send directions:     2,941,163
+    // remove grid writing: 6,747,138
 }
 
 impl Simulation {
@@ -103,7 +106,6 @@ impl Simulation {
         let start_pos = self.grid[0].iter().position(|&c| c == 'S').unwrap();
         self.pos_y = 1;
         self.pos_x = start_pos;
-        self.grid[self.pos_y][self.pos_x] = '|';
     }
 
     fn update_grid(&mut self) {
@@ -124,10 +126,7 @@ impl Simulation {
             loop {
                 let last_turn = self.turns.pop().unwrap();
 
-                self.grid[self.pos_y][self.pos_x] = '.';
-                self.pos_y -= 1;
-                self.grid[self.pos_y][self.pos_x] = '.';
-                self.pos_y -= 1;
+                self.pos_y -= 2;
 
                 match last_turn {
                     Direction::Right => self.pos_x -= 1,
@@ -141,12 +140,9 @@ impl Simulation {
             }
 
             // turn right instead
-            self.pos_y += 1;
             self.turns.push(Direction::Right);
             self.pos_x += 1;
-            self.grid[self.pos_y][self.pos_x] = '|';
-            self.pos_y += 1;
-            self.grid[self.pos_y][self.pos_x] = '|';
+            self.pos_y += 2;
 
             return;
         }
@@ -158,17 +154,13 @@ impl Simulation {
             self.left_turn_count += 1;
             self.turns.push(Direction::Left);
             self.pos_x -= 1;
-            self.grid[self.pos_y][self.pos_x] = '|';
             self.pos_y += 1;
-            self.grid[self.pos_y][self.pos_x] = '|';
             return;
         }
 
         // keep going straight
         self.turns.push(Direction::Stright);
-        self.grid[self.pos_y][self.pos_x] = '|';
         self.pos_y += 1;
-        self.grid[self.pos_y][self.pos_x] = '|';
     }
 }
 
@@ -178,13 +170,14 @@ struct App {
     pub vertical_scroll: usize,
     pub horizontal_scroll: usize,
 
-    pub grid: Vec<Vec<char>>,
+    pub original_grid: Vec<Vec<char>>,
+    pub current_path: Vec<Direction>,
     pub permutations: u64,
     pub fps: f32,
     pub width: usize,
     pub height: usize,
 
-    pub rx_grid: Receiver<Vec<Vec<char>>>,
+    pub rx_current_path: Receiver<Vec<Direction>>,
     pub rx_perms: Receiver<u64>,
     pub rx_fps: Receiver<f32>,
     pub poll_rate: Duration,
@@ -193,7 +186,7 @@ struct App {
 
 impl App {
     fn new(
-        rx_grid: Receiver<Vec<Vec<char>>>,
+        rx_current_path: Receiver<Vec<Direction>>,
         rx_perms: Receiver<u64>,
         rx_fps: Receiver<f32>,
         render_rate: Duration,
@@ -213,13 +206,14 @@ impl App {
             vertical_scroll: 0,
             horizontal_scroll: 0,
 
-            grid,
+            original_grid: grid,
+            current_path: Vec::new(),
             permutations: 0,
             fps: 0.,
             width,
             height,
 
-            rx_grid,
+            rx_current_path,
             rx_perms,
             rx_fps,
             render_rate,
@@ -234,9 +228,10 @@ impl App {
 
         loop {
             if last_render.elapsed() > self.render_rate {
-                self.grid = self.rx_grid.recv_timeout(rx_timeout)?;
+                self.current_path = self.rx_current_path.recv_timeout(rx_timeout)?;
                 self.permutations = self.rx_perms.recv_timeout(rx_timeout)?;
                 self.fps = self.rx_fps.recv_timeout(rx_timeout)?;
+
                 terminal.draw(|frame| self.render(frame))?;
                 last_render = Instant::now();
             }
@@ -262,11 +257,30 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
+        let mut grid = self.original_grid.clone();
+
+        let start_pos = grid[0].iter().position(|&c| c == 'S').unwrap();
+        let mut pos_y = 1;
+        let mut pos_x = start_pos;
+        grid[pos_y][pos_x] = '|';
+
+        for turn in &self.current_path {
+            pos_y += 1;
+            match turn {
+                Direction::Left => pos_x -= 1,
+                Direction::Right => pos_x += 1,
+                Direction::Stright => (),
+            }
+            grid[pos_y][pos_x] = '|';
+            pos_y += 1;
+            grid[pos_y][pos_x] = '|';
+        }
+
         let mut display_text: Vec<Line<'_>> = Vec::new();
         for y in 0..self.height {
             let mut line = String::new();
             for x in 0..self.width {
-                line.push(self.grid[y][x]);
+                line.push(grid[y][x]);
             }
             display_text.push(Line::from(line));
         }
